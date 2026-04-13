@@ -11,6 +11,7 @@
 
 // --- Configuration ---
 
+
 // --- SENSOR & OUTPUT PIN DEFINITIONS ---
 #define DHTPIN 4          
 #define DHTTYPE DHT22     
@@ -19,10 +20,6 @@
 #define MQ7_PIN 33        
 #define MQ135_PIN 34      
 #define BUZZER_PIN 25     
-#define BUTTON_PIN 13     // MOVED TO PIN 13
-
-// --- SYSTEM STATE ---
-bool systemEnabled = true; 
 
 // --- OLED CONFIGURATION ---
 #define SCREEN_WIDTH 128 
@@ -47,83 +44,54 @@ String getTimestamp() {
   return String(timeStringBuff);
 }
 
-void checkHardwareSwitch() {
-  int reading = digitalRead(BUTTON_PIN);
-  
-  // LOGIC: If Pin is LOW (Switch is flipped to GND), system is ON
-  if (reading == LOW && !systemEnabled) {
-      systemEnabled = true;
-      Serial.println("\n>>> [HARDWARE] Switch flipped ON (Pin 13)");
-  } 
-  // If Pin is HIGH (Switch is open), system is OFF
-  else if (reading == HIGH && systemEnabled) {
-      systemEnabled = false;
-      Serial.println("\n>>> [HARDWARE] Switch flipped OFF (Pin 13)");
-      digitalWrite(BUZZER_PIN, LOW); 
-  }
-}
-
-void checkSerialDebugger() {
-  if (Serial.available() > 0) {
-    String input = Serial.readStringUntil('\n');
-    input.trim(); 
-    input.toUpperCase(); 
-    if (input == "T") {
-      systemEnabled = !systemEnabled;
-      Serial.print("\n>>> [VIRTUAL] Toggle. System now: ");
-      Serial.println(systemEnabled ? "ON" : "OFF");
-    }
-  }
-}
-
 void setup() {
   Serial.begin(115200);
+
   dht.begin();
   pinMode(FLAME_PIN, INPUT);
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW); 
-  
-  // Initialize new pin 13
-  pinMode(BUTTON_PIN, INPUT_PULLUP);
 
+  // Initialize OLED
   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { 
-    Serial.println(F("OLED failed."));
+    Serial.println(F("OLED failed. Check wiring or I2C address."));
   } else {
     display.clearDisplay();
+    display.setTextSize(1);
     display.setTextColor(WHITE);
+    display.setCursor(0, 10);
+    display.println("System Booting...");
+    display.println("Connecting WiFi...");
     display.display();
   }
 
+  // Connect to WiFi
   WiFi.begin(ssid, password);
   while(WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
 
+  // Update OLED when connected
+  display.clearDisplay();
+  display.setCursor(0, 10);
+  display.println("WiFi Connected!");
+  display.println("Syncing Time...");
+  display.display();
+
+  // Sync Time with retry limit so it doesn't freeze
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
   struct tm timeinfo;
-  while (!getLocalTime(&timeinfo, 5000)) { delay(10); }
+  int timeRetries = 0;
+  while (!getLocalTime(&timeinfo, 5000) && timeRetries < 3) { 
+    Serial.println("Retrying time sync...");
+    timeRetries++; 
+  }
 
-  Serial.println("\n--- SYSTEM READY ON PIN 13 ---");
+  Serial.println("\n--- SYSTEM FULLY POWERED ON ---");
 }
 
 void loop() {
-  checkHardwareSwitch();
-  checkSerialDebugger();
-
-  if (!systemEnabled) {
-    display.clearDisplay();
-    display.setTextSize(2);
-    display.setCursor(20, 20);
-    display.println("SYSTEM");
-    display.setCursor(40, 40);
-    display.println("OFF");
-    display.display();
-    digitalWrite(BUZZER_PIN, LOW);
-    delay(100); 
-    return; 
-  }
-
   bool currentTriggerBuzzer = false;
   String currentDangerLevel = "SAFE";
 
@@ -186,7 +154,7 @@ void loop() {
       if (isDanger) {
         display.setTextSize(2); 
         display.println("  ( )  ");
-        display.println(" (___) ");
+        display.println(" (_) ");
         display.setTextSize(1); 
         display.print("LVL: "); display.println(currentDangerLevel);
       } else {
@@ -202,12 +170,9 @@ void loop() {
     http.end();
   }
 
+  // --- 60 SECOND SMART DELAY FOR BUZZER ---
   unsigned long waitStart = millis();
   while (millis() - waitStart < 60000) {
-    checkHardwareSwitch(); 
-    checkSerialDebugger();
-    if (!systemEnabled) break;
-
     if (currentTriggerBuzzer) {
       if (currentDangerLevel == "CRITICAL") {
         digitalWrite(BUZZER_PIN, HIGH); 
