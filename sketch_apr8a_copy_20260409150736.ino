@@ -10,7 +10,13 @@
 #include <Adafruit_SSD1306.h>   
 
 // --- Configuration ---
+const char* ssid = "";        
+const char* password = ""; 
+const char* serverName = "https://firealarm-with-ai-production.up.railway.app/api/readings";
 
+// --- NEW: Override Endpoint ---
+const char* alarmServerName = "https://firealarm-with-ai-production.up.railway.app/api/alarm";
+const char* device_id = "iot-device-001";
 
 // --- SENSOR & OUTPUT PIN DEFINITIONS ---
 #define DHTPIN 4          
@@ -95,6 +101,7 @@ void loop() {
   bool currentTriggerBuzzer = false;
   String currentDangerLevel = "SAFE";
 
+  // 1. SENSOR SCANNING & AI POSTING
   if(WiFi.status() == WL_CONNECTED){
     float temp = dht.readTemperature();
     float hum = dht.readHumidity();
@@ -132,7 +139,7 @@ void loop() {
     String requestBody;
     serializeJson(doc, requestBody);
     
-    Serial.println("\n>>> SENDING JSON:");
+    Serial.println("\n>>> SENDING SENSORS TO AI:");
     Serial.println(requestBody);
 
     int httpResponseCode = http.POST(requestBody);
@@ -170,10 +177,43 @@ void loop() {
     http.end();
   }
 
-  // --- 60 SECOND SMART DELAY FOR BUZZER ---
+  // --- 60 SECOND SMART DELAY FOR BUZZER & OVERRIDE ---
   unsigned long waitStart = millis();
+  unsigned long lastOverrideCheck = 0;
+  bool manualOverrideActive = false;
+
   while (millis() - waitStart < 60000) {
-    if (currentTriggerBuzzer) {
+    
+    // --- CHECK MANUAL OVERRIDE EVERY 2 SECONDS ---
+    if (millis() - lastOverrideCheck >= 2000) {
+      lastOverrideCheck = millis();
+      
+      if (WiFi.status() == WL_CONNECTED) {
+        WiFiClientSecure overrideClient;
+        overrideClient.setInsecure();
+        HTTPClient overrideHttp;
+        
+        overrideHttp.begin(overrideClient, alarmServerName);
+        int overrideCode = overrideHttp.GET();
+        
+        if (overrideCode == 200) {
+          String payload = overrideHttp.getString();
+          DynamicJsonDocument overrideDoc(256);
+          if (!deserializeJson(overrideDoc, payload)) {
+            manualOverrideActive = overrideDoc["is_active"];
+          }
+        }
+        overrideHttp.end();
+      }
+    }
+
+    // --- PRIORITY BUZZER LOGIC ---
+    if (manualOverrideActive) {
+      // 1. Top Priority: User clicked the button on the web UI
+      digitalWrite(BUZZER_PIN, HIGH);
+      
+    } else if (currentTriggerBuzzer) {
+      // 2. Secondary Priority: AI detected danger
       if (currentDangerLevel == "CRITICAL") {
         digitalWrite(BUZZER_PIN, HIGH); 
       } else if (currentDangerLevel == "HIGH") {
@@ -181,10 +221,15 @@ void loop() {
       } else {
         digitalWrite(BUZZER_PIN, (millis() / 600) % 2);
       }
+      
     } else {
+      // 3. System is Safe
       digitalWrite(BUZZER_PIN, LOW); 
     }
-    delay(20); 
+    
+    delay(20); // Small delay to prevent watchdog timer panic
   }
+  
+  // Ensure buzzer is off before starting the next full loop scan
   digitalWrite(BUZZER_PIN, LOW); 
 }
