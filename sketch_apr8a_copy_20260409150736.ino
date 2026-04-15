@@ -10,12 +10,12 @@
 #include <Adafruit_SSD1306.h>   
 
 // --- Configuration ---
-const char* ssid = "kukai";        
-const char* password = "kukay081_"; 
-const char* serverName = "http://127.0.0.1:8000/api/readings";
+const char* ssid = "";        
+const char* password = ""; 
+const char* serverName = "https://firealarm-with-ai-production.up.railway.app/api/readings";
 
 // --- NEW: Override Endpoint ---
-const char* alarmServerName = "http://127.0.0.1:8000/api/alarm";
+const char* alarmServerName = "https://firealarm-with-ai-production.up.railway.app/api/alarm";
 const char* device_id = "iot-device-001";
 
 // --- SENSOR & OUTPUT PIN DEFINITIONS ---
