@@ -5,13 +5,13 @@
 #include <time.h>     
 #include <sys/time.h> 
 #include <DHT.h> 
-#include <Wire.h>               
-#include <Adafruit_GFX.h>       
-#include <Adafruit_SSD1306.h>   
+#include <Wire.h>                
+#include <Adafruit_GFX.h>        
+#include <Adafruit_SSD1306.h>    
 
 // --- Configuration ---
-const char* ssid = "";        
-const char* password = ""; 
+const char* ssid = "OPPOA16";        
+const char* password = "12345678Kim"; 
 const char* serverName = "https://firealarm-with-ai-production.up.railway.app/api/readings";
 
 // --- NEW: Override Endpoint ---
@@ -21,7 +21,7 @@ const char* device_id = "iot-device-001";
 // --- SENSOR & OUTPUT PIN DEFINITIONS ---
 #define DHTPIN 4          
 #define DHTTYPE DHT22     
-#define FLAME_PIN 27      
+#define FLAME_PIN 27      // Connected to ADC-capable pin for Analog Read
 #define MQ2_PIN 32        
 #define MQ7_PIN 33        
 #define MQ135_PIN 34      
@@ -36,17 +36,19 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 DHT dht(DHTPIN, DHTTYPE);
 
 const char* ntpServer = "pool.ntp.org";
-const long  gmtOffset_sec = 28800;  
-const int   daylightOffset_sec = 0; 
 
 String getTimestamp() {
   struct timeval tv;
   gettimeofday(&tv, NULL);
-  struct tm * tm = localtime(&tv.tv_sec); 
+  
+  // Use getLocalTime which strictly obeys the timezone configured in setup()
+  struct tm timeinfo;
+  getLocalTime(&timeinfo); 
+  
   char timeStringBuff[50];
   sprintf(timeStringBuff, "%04d-%02d-%02dT%02d:%02d:%02d.%03d+08:00",
-          tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
-          tm->tm_hour, tm->tm_min, tm->tm_sec, (int)(tv.tv_usec / 1000));
+          timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+          timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, (int)(tv.tv_usec / 1000));
   return String(timeStringBuff);
 }
 
@@ -54,7 +56,6 @@ void setup() {
   Serial.begin(115200);
 
   dht.begin();
-  pinMode(FLAME_PIN, INPUT);
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW); 
 
@@ -85,8 +86,10 @@ void setup() {
   display.println("Syncing Time...");
   display.display();
 
-  // Sync Time with retry limit so it doesn't freeze
-  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+  // Configure Timezone to GMT+8 using POSIX string
+  // Note: "UTC-8" in POSIX standard literally means 8 hours AHEAD of UTC.
+  configTzTime("UTC-8", ntpServer);
+
   struct tm timeinfo;
   int timeRetries = 0;
   while (!getLocalTime(&timeinfo, 5000) && timeRetries < 3) { 
@@ -110,7 +113,15 @@ void loop() {
     int mq2_val = analogRead(MQ2_PIN);
     int mq7_val = analogRead(MQ7_PIN);
     int mq135_val = analogRead(MQ135_PIN);
-    bool flame_detected = (digitalRead(FLAME_PIN) == LOW);
+
+    // --- READ FLAME AS ANALOG ---
+    int flame_val = analogRead(FLAME_PIN);
+    
+    // Convert analog to boolean to match FastAPI schema. 
+    // Analog sensors usually drop resistance (lower value) when near fire.
+    // Standard ESP32 ADC range is 0 - 4095. Tune this threshold!
+    int flameThreshold = 2000; 
+    bool flame_detected = (flame_val < flameThreshold);
 
     display.clearDisplay();
     display.setTextSize(1);
@@ -209,11 +220,9 @@ void loop() {
 
     // --- PRIORITY BUZZER LOGIC ---
     if (manualOverrideActive) {
-      // 1. Top Priority: User clicked the button on the web UI
       digitalWrite(BUZZER_PIN, HIGH);
       
     } else if (currentTriggerBuzzer) {
-      // 2. Secondary Priority: AI detected danger
       if (currentDangerLevel == "CRITICAL") {
         digitalWrite(BUZZER_PIN, HIGH); 
       } else if (currentDangerLevel == "HIGH") {
@@ -223,13 +232,11 @@ void loop() {
       }
       
     } else {
-      // 3. System is Safe
       digitalWrite(BUZZER_PIN, LOW); 
     }
     
-    delay(20); // Small delay to prevent watchdog timer panic
+    delay(20); 
   }
   
-  // Ensure buzzer is off before starting the next full loop scan
   digitalWrite(BUZZER_PIN, LOW); 
 }
